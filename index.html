@@ -1,0 +1,1776 @@
+<?php
+// 顧客番号（URLパラメータがなければ1を使用）
+$customer_id = isset($_GET['id']) ? intval($_GET['id']) : 1;
+
+// DB接続情報
+$servername = "mysql322.phy.lolipop.lan";
+$username = "LAA1491315";
+$password = "test";
+$dbname = "LAA1491315-test";
+
+// データベースに接続
+$conn = new mysqli($servername, $username, $password, $dbname);
+
+// 接続エラー確認
+if ($conn->connect_error) {
+    die("接続失敗: " . $conn->connect_error);
+}
+
+?>
+
+
+
+
+
+<?php
+// 顧客基本情報
+$sql = "SELECT 顧客番号, ふりがな, 顧客名, 電話番号, 性別, 誕生日, 住所 FROM 顧客基本情報 WHERE 顧客番号 = $customer_id";
+$result = $conn->query($sql);
+
+if ($result->num_rows > 0) {
+    $row = $result->fetch_assoc();
+    $row["住所"] = preg_replace("/(\r\n|\r|\n)+/", "\n", $row["住所"]);
+    $row["住所"] = nl2br(htmlspecialchars($row["住所"], ENT_QUOTES, 'UTF-8'));
+} else {
+    $row = ["顧客番号"=>"", "ふりがな"=>"", "顧客名"=>"", 
+            "電話番号"=>"", "性別"=>"", "誕生日"=>"", "住所"=>""];
+}
+
+
+
+
+
+// 接客メモ（最新1件）
+$sql_memo = "SELECT 顧客番号, 日付, 接客メモ
+             FROM 接客メモ
+             WHERE 顧客番号 = $customer_id
+             ORDER BY 日付 DESC
+             LIMIT 1";
+$result_memo = $conn->query($sql_memo);
+
+if ($result_memo && $result_memo->num_rows > 0) {
+    $row_memo = $result_memo->fetch_assoc();
+    $row_memo["接客メモ"] = preg_replace("/(\r\n|\r|\n)+/", "\n", $row_memo["接客メモ"]);
+    $row_memo["接客メモ"] = nl2br(htmlspecialchars($row_memo["接客メモ"], ENT_QUOTES, 'UTF-8'));
+} else {
+    $row_memo = ["顧客番号"=>"", "日付"=>"", "接客メモ"=>""];
+}
+
+// 接客メモ（過去分1件）
+$sql_memo2 = "SELECT 顧客番号, 日付, 接客メモ
+              FROM 接客メモ
+              WHERE 顧客番号 = $customer_id 
+                AND 日付 >= DATE_ADD(NOW(), INTERVAL -1 MONTH)
+                AND 日付 <  (SELECT MAX(日付) FROM 接客メモ WHERE 顧客番号 = $customer_id)
+              ORDER BY 日付 DESC
+              LIMIT 1";
+$result_memo2 = $conn->query($sql_memo2);
+
+if ($result_memo2 && $result_memo2->num_rows > 0) {
+    $row_memo2 = $result_memo2->fetch_assoc();
+    $row_memo2["接客メモ"] = preg_replace("/(\r\n|\r|\n)+/", "\n", $row_memo2["接客メモ"]);
+    $row_memo2["接客メモ"] = nl2br(htmlspecialchars($row_memo2["接客メモ"], ENT_QUOTES, 'UTF-8'));
+} else {
+    $row_memo2 = ["顧客番号"=>"", "日付"=>"", "接客メモ"=>""];
+}
+
+// 顧客特性
+$sql_trait = "SELECT 顧客番号, 顧客特性
+              FROM 顧客特性
+              WHERE 顧客番号 = $customer_id";
+$result_trait = $conn->query($sql_trait);
+
+if ($result_trait && $result_trait->num_rows > 0) {
+    $row_trait = $result_trait->fetch_assoc();
+} else {
+    $row_trait = ["顧客番号"=>"", "顧客特性"=>""];
+}
+?>
+
+<?php
+if ($_SERVER['REQUEST_METHOD'] === 'POST' &&
+    isset($_SERVER['CONTENT_TYPE']) &&
+    strpos($_SERVER['CONTENT_TYPE'], 'application/json') !== false) {
+
+  header('Content-Type: application/json');
+  ob_end_clean(); // ← 出力バッファを消すことでHTML混入を防ぐ！
+
+  $input = json_decode(file_get_contents('php://input'), true);
+  $customer_id = $input['customer_id'] ?? '';
+  $type = $input['type'] ?? '';
+  $content = $input['content'] ?? '';
+
+  $sql = "SELECT COUNT(*) FROM チケット管理 
+          WHERE 顧客番号 = ? AND 種類 = ? AND 内容 = ?";
+  $stmt = $conn->prepare($sql);
+  $stmt->bind_param("iss", $customer_id, $type, $content);
+  $stmt->execute();
+  $stmt->bind_result($cnt);
+  $stmt->fetch();
+
+  echo json_encode(['exists' => $cnt > 0]);
+  exit; // ← これで以降のHTML出力を止める
+}
+?>
+
+
+
+<?php
+// DB接続（前提として $conn は事前に用意されている）
+$registerMessage = "";
+
+if ($_SERVER["REQUEST_METHOD"] === "POST") {
+    $mode = $_POST["mode"] ?? "";
+
+    if ($mode === "register") {
+        // 登録処理
+        $stmt = $conn->prepare("
+            INSERT INTO 顧客基本情報 (ふりがな, 顧客名, 電話番号, 性別, 誕生日, 住所)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ");
+        $stmt->bind_param(
+            "ssssss",
+            $_POST["furigana"],
+            $_POST["name_2"],
+            $_POST["telephone"],
+            $_POST["gender"],
+            $_POST["birthday"],
+            $_POST["address"]
+        );
+
+        if ($stmt->execute()) {
+            $registerMessage = "<p style='color:green;'>登録が完了しました（顧客番号：" . $conn->insert_id . "）</p>";
+        } else {
+            $registerMessage = "<p style='color:red;'>登録に失敗しました。</p>";
+        }
+    } else {
+        // 検索処理
+        $conditions = [];
+
+        foreach ([
+            "furigana" => "ふりがな",
+            "name_2" => "顧客名",
+            "telephone" => "電話番号",
+            "gender" => "性別",
+            "birthday" => "誕生日",
+            "address" => "住所"
+        ] as $key => $column) {
+            if (!empty($_POST[$key])) {
+                $value = $conn->real_escape_string($_POST[$key]);
+                if (in_array($key, ["gender", "birthday"])) {
+                    $conditions[] = "$column = '$value'";
+                } else {
+                    $conditions[] = "$column LIKE '%$value%'";
+                }
+            }
+        }
+
+        if ($conditions) {
+            $where_sql = implode(" AND ", $conditions);
+            $sql = "SELECT * FROM 顧客基本情報 WHERE $where_sql";
+            $result = $conn->query($sql);
+
+            if (isset($result) && $result->num_rows > 0) {
+                echo "<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const mainDiv = document.querySelector('.main_screen');
+        if (mainDiv) {
+            mainDiv.style.display = 'none';
+        }
+    });
+</script>";
+                echo "<h4>検索結果</h4>";
+                echo "<p>複数ヒットしました。表示する顧客情報を選択してください。</p>";
+                echo "<table border='1' style='border-collapse: collapse; width: 100%;'>";
+                echo "<tr>
+                        <th class='table-highlight'>ふりがな</th>
+                        <th class='table-highlight'>顧客名</th>
+                        <th class='table-highlight'>電話番号</th>
+                        <th class='table-highlight'>性別</th>
+                        <th class='table-highlight'>誕生日</th>
+                        <th class='table-highlight'>住所</th>
+                        <th class='table-highlight'>選択</th>
+                      </tr>";
+
+                while ($row = $result->fetch_assoc()) {
+                    echo "<tr>";
+                    echo "<td>" . htmlspecialchars($row['ふりがな']) . "</td>";
+                    echo "<td>" . htmlspecialchars($row['顧客名']) . "</td>";
+                    echo "<td>" . htmlspecialchars($row['電話番号']) . "</td>";
+                    echo "<td>" . htmlspecialchars($row['性別']) . "</td>";
+                    echo "<td>" . htmlspecialchars($row['誕生日']) . "</td>";
+                    echo "<td>" . htmlspecialchars($row['住所']) . "</td>";
+                    echo "<td><a href='?id={$row['顧客番号']}'>選択</a></td>";
+                    echo "</tr>";
+                }
+
+                echo "</table>";
+            } else {
+                echo "<p style='color: red;'>一致する顧客が見つかりませんでした。</p>";
+            }
+        }
+    }
+}
+?>
+
+
+
+
+
+
+<div class="main_screen">
+
+<div class="container">
+    <div class="left">
+        <h4>顧客基本情報</h4>
+        <table border="1">
+            <tr>
+                <td width="30%" class="table-highlight">ふりがな</td>
+                <td><?php echo $row["ふりがな"]; ?></td>
+            </tr>
+            <tr>
+                <td class="table-highlight">顧客名</td>
+                <td><?php echo $row["顧客名"]; ?></td>
+            </tr>
+            <tr>
+                <td class="table-highlight">電話番号</td>
+                <td><?php echo $row["電話番号"]; ?></td>
+            </tr>
+            <tr>
+                <td class="table-highlight">性別</td>
+                <td><?php echo $row["性別"]; ?></td>
+            </tr>
+            <tr>
+                <td class="table-highlight">誕生日</td>
+                <td><?php echo $row["誕生日"]; ?></td>
+            </tr>
+            <tr>
+                <td class="table-highlight">住所</td>
+                <td><?php echo $row["住所"]; ?></td>
+            </tr>
+        </table>
+<br>
+
+
+<div class="container3">
+  <div class="left3">        
+<div class="button001">
+            <a onclick="openModal_5()" href="#">顧客検索</a>
+        </div></div>
+  <div class="center3"></div>
+  <div class="right3">
+        <div class="button001">
+            <a onclick="openModal_6()" href="#">顧客登録</a>
+        </div>
+</div>
+</div>
+
+
+<div class="space5"></div> 
+        <h4>接客メモ</h4>
+        <div class="scroll-box3">
+            <?php echo $row_memo["日付"]; ?><br>
+            <?php echo $row_memo["接客メモ"]; ?>
+        </div> 
+
+        <div class="scroll-box">
+            <h5>履歴</h5>
+            <?php
+
+if ($result_memo2 && $result_memo2->num_rows > 0) {
+    while ($row_memo2 = $result_memo2->fetch_assoc()) {
+        echo '<div class="scroll-box4">';
+        echo htmlspecialchars($row_memo2["日付"]) . '<br>'; // 日付の後ろに改行
+        echo nl2br(htmlspecialchars($row_memo2["接客メモ"], ENT_QUOTES, 'UTF-8')); // 改行を反映
+        echo '</div>';
+    
+}
+
+            } else {
+                echo '<p>直近1カ月のデータはありません。</p>';
+            }
+            ?>
+        </div>
+
+
+
+        <h4>顧客特性</h4>
+        <div class="scroll-box2">
+            <?php echo $row_trait["顧客特性"]; ?>
+
+
+
+        </div>
+
+<br>
+<div class="container3">
+  <div class="left3">        
+<div class="button001">
+            <a onclick="openModal_7()" href="#">接客メモ登録</a>
+        </div></div>
+  <div class="center3"></div>
+  <div class="right3">
+        <div class="button001">
+            <a onclick="openModal_8()" href="#">顧客特性登録</a>
+        </div>
+</div>
+</div>
+    </div>
+
+
+
+
+
+
+
+
+
+
+    <div class="right">
+        <div class="container2">
+            <div class="left2">
+                <h4>チケット管理</h4>
+
+
+
+
+
+<?php
+function renderTable($label, $conn, $customer_id, $typeKey) {
+  echo "<table id='table-$typeKey'>";
+  echo "<thead>
+          <tr>
+
+            <th>種類</th>
+            <th>内容</th>
+            <th>使用済</th>
+            <th>残数</th>
+            <th>前回使用日</th>
+            <th>前回使用数</th>
+          </tr>
+        </thead>";
+
+  echo "<tbody>";
+  // 最初の1件（初期表示）
+  echo "<tr>
+          <td>" . htmlspecialchars($label) . "</td>
+          <td>" . htmlspecialchars($row["内容"]) . "</td>
+          <td>" . htmlspecialchars($row["使用済み枚数"]) . "</td>
+          <td>" . htmlspecialchars($row["残数"]) . "</td>
+          <td>" . htmlspecialchars($row["前回使用日"]) . "</td>
+          <td>" . htmlspecialchars($row["前回使用数"]) . "</td>
+        </tr>";
+  echo "</tbody>";
+
+  // 拡張分（非表示で開始）
+  echo "<tbody class='extra-$typeKey' style='display: none'>";
+  $stmt = $conn->prepare("
+    SELECT 種類, 内容, 使用済み枚数, 残数, 前回使用日, 前回使用数 
+    FROM チケット管理 
+    WHERE 顧客番号 = ? AND 種類 = ? 
+    ORDER BY 前回使用日 DESC
+  ");
+  $stmt->bind_param("is", $customer_id, $label);
+  $stmt->execute();
+  $result = $stmt->get_result();
+  $skipFirst = true;
+
+  while ($r = $result->fetch_assoc()) {
+    if ($skipFirst) { $skipFirst = false; continue; }
+
+    echo "<tr>
+            <td>" . htmlspecialchars($r["種類"]) . "</td>
+            <td>" . htmlspecialchars($r["内容"]) . "</td>
+            <td>" . htmlspecialchars($r["使用済み枚数"]) . "</td>
+            <td>" . htmlspecialchars($r["残数"]) . "</td>
+            <td>" . htmlspecialchars($r["前回使用日"]) . "</td>
+            <td>" . htmlspecialchars($r["前回使用数"]) . "</td>
+          </tr>";
+  }
+  echo "</tbody>";
+  echo "</table>";
+
+
+  // ボタン
+  echo "<button class='more-button' onclick=\"toggleExtra('$typeKey')\" id='btn-$typeKey'>もっと見る</button><br><br>";
+}
+
+// 呼び出し
+renderTable("レプトンガス", $conn, $customer_id, "lepton");
+renderTable("ゴッドクリーナー", $conn, $customer_id, "god");
+renderTable("レプトン＆ゴッド", $conn, $customer_id, "set");
+?>
+
+
+
+<script>
+ function toggleExtra(key) {
+    console.log('toggleExtra called for', key);
+    const extras = document.querySelectorAll('.extra-' + key);
+    console.log('togglable:', extras.length);
+    extras.forEach(el => {
+      el.style.display = el.style.display === 'none' ? '' : 'none';
+    });
+    const btn = document.getElementById('btn-' + key);
+    btn.textContent = btn.textContent === 'もっと見る' ? '閉じる' : 'もっと見る';
+</script>
+
+
+
+            </div>
+            <div class="right"><div class="space1"></div> 
+
+                
+                <div class="button001">
+                    <a onclick="openModal()" href="#">チケット追加</a><div class="space3"></div> 
+                </div>
+
+<div class="button001">
+                   
+                    <a onclick="openModal_2()" href="#">チケット使用</a>
+
+                </div>
+            </div>
+        </div>
+
+        <div class="container2">
+            <div class="left2">
+                <h4>顧客物販情報</h4>
+
+<?php
+// 0. 必要に応じて typeKey や customer_id を用意
+$typeKey     = 'product';
+$customer_id = intval($customer_id);
+
+// 1. 全期間分を取得
+$sql = "
+  SELECT 顧客番号, 日付, 種類, 金額
+  FROM 顧客物販情報
+  WHERE 顧客番号 = {$customer_id}
+  ORDER BY 日付 DESC
+";
+$res = $conn->query($sql);
+
+// 2. 日付グループ化
+$grouped = [];
+while ($row = $res->fetch_assoc()) {
+    $date = date("Y/m/d", strtotime($row['日付']));
+    $grouped[$date][] = [
+        '種類' => htmlspecialchars($row['種類'], ENT_QUOTES, 'UTF-8'),
+        '金額' => number_format((float)$row['金額']) . '円'
+    ];
+}
+
+// 3. 最新3日分以外を抽出
+$allDates   = array_keys($grouped);
+$extraDates = array_slice($allDates, 3);
+
+// 4. テーブル出力（全件）
+foreach ($grouped as $date => $items) {
+    // 3日目以降は extra-product クラスを付与
+    $isExtra    = in_array($date, $extraDates, true);
+    $extraClass = $isExtra ? "extra-{$typeKey}" : "";
+
+    echo "<table class='date-table {$extraClass}' "
+       .  "style='width:100%; border-collapse:collapse; margin-bottom:10px;'>";
+
+    echo "<tr>"
+       .  "<th width='100%' colspan='2' style='width:100%; text-align:center; padding:4px; "
+       .  "background-color:#F5B964;'>{$date}</th>"
+       .  "</tr>";
+
+    foreach ($items as $p) {
+        echo "<tr>"
+           .  "<td width='80%' style='padding:4px;'>{$p['種類']}</td>"
+           .  "<td width='20%' style='padding:4px; text-align:right;'>{$p['金額']}</td>"
+           .  "</tr>";
+    }
+    echo "</table>";
+}
+
+// 5. ボタンだけ出力
+echo "<button type='button' class='more-button' "
+   .  "onclick=\"toggleExtra('{$typeKey}')\" "
+   .  "id='btn-{$typeKey}'>もっと見る</button>";
+
+?>
+
+
+
+<script>
+function toggleExtra(typeKey) {
+  const extras = document.querySelectorAll('.extra-' + typeKey);
+  const btn = document.getElementById('btn-' + typeKey);
+  const isOpen = extras[0]?.style.display !== 'none';
+
+  extras.forEach(e => {
+    e.style.display = isOpen ? 'none' : 'table';
+  });
+
+  if (btn) btn.textContent = isOpen ? 'もっと見る' : '閉じる';
+}
+</script>
+
+
+
+            </div>
+            <div class="right"><div class="space4"></div> 
+                <div class="button001">
+                    <a href="#">物販追加</a>
+                </div>
+            </div>
+        </div>
+
+
+        <div class="container2">
+            <div class="left2">
+
+
+
+<h4>所持ポイント</h4>
+<?php
+
+
+// 最新10件を取得
+$sql = "SELECT 顧客番号, 日付, 今回ポイント 
+        FROM 所持ポイント 
+        WHERE 顧客番号 = $customer_id 
+        ORDER BY 日付 DESC 
+        LIMIT 10";
+
+$result = $conn->query($sql);
+
+// 配列へ整形
+$points_data = [];
+if ($result && $result->num_rows > 0) {
+    while ($row = $result->fetch_assoc()) {
+        $points_data[] = [
+            "日付"     => date("Y/m/d", strtotime($row["日付"])),
+            "ポイント" => number_format((int)$row["今回ポイント"]) . "P"
+        ];
+    }
+}
+
+
+
+// テーブル出力（2列×複数行、横並びで流れる）
+if (count($points_data) >= 2) {
+    echo "<table border='1' style='border-collapse: collapse; text-align: center;'>";
+
+    // 2件ずつ処理
+    for ($i = 0; $i < count($points_data); $i += 2) {
+        echo "<tr>";
+        // 左側
+        echo "<td width='25%' class='table-highlight'>{$points_data[$i]['日付']}</td>";
+        echo "<td width='25%' style='text-align: right;'>{$points_data[$i]['ポイント']}</td>";
+
+        // 右側（存在する場合のみ）
+        if (isset($points_data[$i + 1])) {
+            echo "<td width='25%' class='table-highlight'>{$points_data[$i + 1]['日付']}</td>";
+            echo "<td width='25%' style='text-align: right;'>{$points_data[$i + 1]['ポイント']}</td>";
+        }
+        echo "</tr>";
+    }
+
+    echo "</table>";
+} else {
+    echo "<p>ポイント履歴が2件未満のため、表示できません。</p>";
+}
+
+?>
+
+	<a href="#">もっと見る</a>
+
+
+
+
+
+
+            </div>
+            <div class="right"><div class="space4"></div> 
+                <div class="button001">
+                    <a onclick="clickEvent2()" href="#">ポイント付与</a>
+                </div>
+            </div>
+        </div>
+
+
+
+
+
+
+<div class="container2">
+            <div class="left2">
+ 
+
+    <h4>紹介特典</h4>
+    <?php
+    // 顧客番号で検索（特典対象者にマッチ）
+    $sql_tokuten = "SELECT 
+                        t.日付,
+                        t.区分,
+                        t.紹介相手,
+                        g.顧客名 AS 紹介相手名,
+                        t.特典使用状況
+                    FROM 紹介特典 t
+                    LEFT JOIN 顧客基本情報 g
+                      ON t.紹介相手 = g.顧客番号
+                    WHERE t.特典対象者 = $customer_id
+                    ORDER BY t.日付 DESC";
+
+    $result_tokuten = $conn->query($sql_tokuten);
+
+    $tokuten_list = [];
+    if ($result_tokuten && $result_tokuten->num_rows > 0) {
+        while ($row_tokuten = $result_tokuten->fetch_assoc()) {
+            $tokuten_list[] = [
+                "日付" => date("Y/m/d", strtotime($row_tokuten["日付"])),
+                "区分" => htmlspecialchars($row_tokuten["区分"]),
+                "紹介相手名" => htmlspecialchars($row_tokuten["紹介相手名"]),
+                "特典使用状況" => htmlspecialchars($row_tokuten["特典使用状況"])
+            ];
+        }
+    }
+
+    if (count($tokuten_list) > 0) {
+        echo "<table border='1' style='border-collapse: collapse; width:100%; text-align: center; margin-top:10px;'>";
+        echo "<tr><th class='table-highlight'>日付</th><th class='table-highlight'>区分</th><th class='table-highlight'>紹介相手</th><th class='table-highlight'>特典使用状況</th></tr>";
+        foreach ($tokuten_list as $item) {
+            echo "<tr>
+                    <td>{$item['日付']}</td>
+                    <td>{$item['区分']}</td>
+                    <td>{$item['紹介相手名']}</td>
+                    <td>{$item['特典使用状況']}</td>
+                  </tr>";
+        }
+        echo "</table>";
+    } else {
+        echo "<p style='color:red;'>紹介特典のデータが見つかりません。</p>";
+    }
+    ?>
+
+
+
+
+
+
+	<a href="#">もっと見る</a>
+            </div>
+            <div class="right"><div class="space4"></div> 
+
+<div class="button001">
+
+<a onclick="openModal_9()" href="#">特典追加</a>
+
+                </div>
+<div class="space3"></div> 
+                <div class="button001">
+                    <a href="#" onclick="useTokuten(); return false;">特典使用</a>
+                </div>
+            </div>
+        </div>
+
+
+            </div>
+        </div>
+
+
+
+
+
+
+</div>
+  
+
+
+
+
+
+<script>
+  function clickEvent2() {
+    const confirmed = confirm(`1Pを追加してもよろしいですか？`);
+
+    if (confirmed) {
+      alert(`1Pを追加しました。`);
+    } else {
+      alert(`キャンセルされました。`);
+    }
+  }
+</script>
+
+
+
+<?php
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+
+?>
+
+  <script>
+    // 顧客IDを埋め込む
+    let customer_id = <?php echo json_encode($customer_id); ?>;
+
+    // 登録実行関数
+    function clickEvent(label) {
+      if (!label) return;
+      if (confirm(label + " を追加してよろしいですか？")) {
+        fetch("ticket_api.php", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ customer_id, item_label: label })
+        })
+        .then(res => res.text())
+        .then(text => {
+          console.log("📦 応答内容:", text);
+          try {
+            const data = JSON.parse(text);
+            if (data.success) {
+              alert(data.message);
+              location.reload();
+            } else {
+              const msg = data.error || "エラー内容が取得できませんでした。";
+              alert("エラー: " + msg);
+            }
+          } catch (e) {
+            alert("サーバーの応答が不正です。");
+          }
+        })
+        .catch(err => {
+          alert("通信エラーが発生しました。");
+        });
+      }
+    }
+  </script>
+
+
+
+
+<?php
+$conn->close();
+?>
+
+
+
+
+
+
+
+
+<!-- モーダル本体 -->
+<div id="simpleModal" class="modal">
+  <div class="modal-content">
+    <span class="close-btn" onclick="closeModal()">×</span>
+    <h5>追加するチケットをクリックしてください。</h5>
+
+<table border="1">
+  <!-- レプトンガス -->
+  <tr>
+    <td width="25%" rowspan="6" class="table-highlight">レプトンガス</td>
+    <td width="25%" rowspan="3" class="table-highlight">一般</td>
+    <td width="50%"><a href="#" onclick="clickEvent('レプトンガス 30分×6回')">30分×6回</a></td>
+  </tr>
+  <tr><td><a href="#" onclick="clickEvent('レプトンガス 30分×12回')">30分×12回</a></td></tr>
+  <tr><td><a href="#" onclick="clickEvent('レプトンガス 30分×24回')">30分×24回</a></td></tr>
+  <tr>
+    <td rowspan="3" class="table-highlight">重病</td>
+    <td><a href="#" onclick="clickEvent('レプトンガス 30分×6回（重病）')">30分×6回</a></td>
+  </tr>
+  <tr><td><a href="#" onclick="clickEvent('レプトンガス 30分×12回（重病）')">30分×12回</a></td></tr>
+  <tr><td><a href="#" onclick="clickEvent('レプトンガス 30分×24回（重病）')">30分×24回</a></td></tr>
+
+  <!-- ゴッドクリーナー -->
+  <tr>
+    <td rowspan="6" class="table-highlight">ゴッドクリーナー</td>
+    <td rowspan="3" class="table-highlight">一般</td>
+    <td><a href="#" onclick="clickEvent('ゴッドクリーナー 30分×6回')">30分×6回</a></td>
+  </tr>
+  <tr><td><a href="#" onclick="clickEvent('ゴッドクリーナー 30分×10回')">30分×10回</a></td></tr>
+  <tr><td><a href="#" onclick="clickEvent('ゴッドクリーナー 30分×20回')">30分×20回</a></td></tr>
+  <tr>
+    <td rowspan="3" class="table-highlight">重病</td>
+    <td><a href="#" onclick="clickEvent('ゴッドクリーナー 30分×6回（重病）')">30分×6回</a></td>
+  </tr>
+  <tr><td><a href="#" onclick="clickEvent('ゴッドクリーナー 30分×10回（重病）')">30分×10回</a></td></tr>
+  <tr><td><a href="#" onclick="clickEvent('ゴッドクリーナー 30分×20回（重病）')">30分×20回</a></td></tr>
+
+  <!-- レプトンガス＆ゴッドクリーナー -->
+  <tr>
+    <td rowspan="6" class="table-highlight">レプトンガス＆<br>ゴッドクリーナー</td>
+    <td rowspan="3" class="table-highlight">一般</td>
+    <td><a href="#" onclick="clickEvent('レプトン＆ゴッド 60分×6回')">60分×6回</a></td>
+  </tr>
+  <tr><td><a href="#" onclick="clickEvent('レプトン＆ゴッド 60分×12回')">60分×12回</a></td></tr>
+  <tr><td><a href="#" onclick="clickEvent('レプトン＆ゴッド 60分×24回')">60分×24回</a></td></tr>
+  <tr>
+    <td rowspan="3" class="table-highlight">重病</td>
+    <td><a href="#" onclick="clickEvent('レプトン＆ゴッド 60分×6回（重病）')">60分×6回</a></td>
+  </tr>
+  <tr><td><a href="#" onclick="clickEvent('レプトン＆ゴッド 60分×12回（重病）')">60分×12回</a></td></tr>
+  <tr><td><a href="#" onclick="clickEvent('レプトン＆ゴッド 60分×24回（重病）')">60分×24回</a></td></tr>
+</table>
+
+<br>
+
+                <div class="button001" onclick="closeModal()">
+                    <a href="#">閉じる</a>
+                </div>
+
+  </div>
+</div>
+
+
+
+
+
+
+
+<script>
+function openModal() {
+  document.getElementById("simpleModal").style.display = "block";
+}
+
+function closeModal() {
+  document.getElementById("simpleModal").style.display = "none";
+}
+
+function confirmAction() {
+  alert("OKが押されました！");
+  closeModal();
+}
+function openModal() {
+  document.getElementById("simpleModal").style.display = "block";
+  document.body.classList.add("modal-open");
+}
+
+function closeModal() {
+  document.getElementById("simpleModal").style.display = "none";
+  document.body.classList.remove("modal-open");
+}
+
+</script>
+
+
+
+
+
+
+
+
+<script>
+function openModal_2() {
+  document.getElementById("simpleModal_2").style.display = "block";
+}
+
+function closeModal_2() {
+  document.getElementById("simpleModal_2").style.display = "none";
+}
+
+function confirmAction() {
+  alert("OKが押されました！");
+  closeModal_2();
+}
+function openModal_2() {
+  document.getElementById("simpleModal_2").style.display = "block";
+  document.body.classList.add("modal-open");
+}
+
+function closeModal_2() {
+  document.getElementById("simpleModal_2").style.display = "none";
+  document.body.classList.remove("modal-open");
+}
+
+
+
+
+
+</script>
+
+
+<!-- モーダル本体 -->
+<div id="simpleModal_2" class="modal">
+  <div class="modal-content">
+    <span class="close-btn" onclick="closeModal_2()">×</span>
+    <h5>使用するチケットをクリックしてください。</h5>
+
+<table border="1">
+  <!-- レプトンガス -->
+  <tr>
+    <td width="25%" rowspan="6" class="table-highlight">レプトンガス</td>
+    <td width="25%" rowspan="3" class="table-highlight">一般</td>
+    <td><a href="#" onclick="checkAndUseTicket('レプトンガス 30分×6回', 6)">30分×6回</a></td>
+  </tr>
+  <tr><td><a href="#" onclick="checkAndUseTicket('レプトンガス 30分×12回', 12)">30分×12回</a></td></tr>
+  <tr><td><a href="#" onclick="checkAndUseTicket('レプトンガス 30分×24回', 24)">30分×24回</a></td></tr>
+  <tr>
+    <td rowspan="3" class="table-highlight">重病</td>
+    <td><a href="#" onclick="checkAndUseTicket('レプトンガス 30分×6回（重病）', 6)">30分×6回</a></td>
+  </tr>
+  <tr><td><a href="#" onclick="checkAndUseTicket('レプトンガス 30分×12回（重病）', 12)">30分×12回</a></td></tr>
+  <tr><td><a href="#" onclick="checkAndUseTicket('レプトンガス 30分×24回（重病）', 24)">30分×24回</a></td></tr>
+
+  <!-- ゴッドクリーナー -->
+  <tr>
+    <td width="25%" rowspan="6" class="table-highlight">ゴッドクリーナー</td>
+    <td width="25%" rowspan="3" class="table-highlight">一般</td>
+    <td><a href="#" onclick="checkAndUseTicket('ゴッドクリーナー 30分×6回', 6)">30分×6回</a></td>
+  </tr>
+  <tr><td><a href="#" onclick="checkAndUseTicket('ゴッドクリーナー 30分×10回', 10)">30分×10回</a></td></tr>
+  <tr><td><a href="#" onclick="checkAndUseTicket('ゴッドクリーナー 30分×20回', 20)">30分×20回</a></td></tr>
+  <tr>
+    <td rowspan="3" class="table-highlight">重病</td>
+    <td><a href="#" onclick="checkAndUseTicket('ゴッドクリーナー 30分×6回（重病）', 6)">30分×6回</a></td>
+  </tr>
+  <tr><td><a href="#" onclick="checkAndUseTicket('ゴッドクリーナー 30分×10回（重病）', 10)">30分×10回</a></td></tr>
+  <tr><td><a href="#" onclick="checkAndUseTicket('ゴッドクリーナー 30分×20回（重病）', 20)">30分×20回</a></td></tr>
+
+  <!-- レプトンガス＆ゴッドクリーナー -->
+  <tr>
+    <td width="25%" rowspan="6" class="table-highlight">レプトンガス＆<br>ゴッドクリーナー</td>
+    <td width="25%" rowspan="3" class="table-highlight">一般</td>
+    <td><a href="#" onclick="checkAndUseTicket('レプトン＆ゴッド 60分×6回', 6)">60分×6回</a></td>
+  </tr>
+  <tr><td><a href="#" onclick="checkAndUseTicket('レプトン＆ゴッド 60分×12回', 12)">60分×12回</a></td></tr>
+  <tr><td><a href="#" onclick="checkAndUseTicket('レプトン＆ゴッド 60分×24回', 24)">60分×24回</a></td></tr>
+  <tr>
+    <td rowspan="3" class="table-highlight">重病</td>
+    <td><a href="#" onclick="checkAndUseTicket('レプトン＆ゴッド 60分×6回（重病）', 6)">60分×6回</a></td>
+  </tr>
+  <tr><td><a href="#" onclick="checkAndUseTicket('レプトン＆ゴッド 60分×12回（重病）', 12)">60分×12回</a></td></tr>
+  <tr><td><a href="#" onclick="checkAndUseTicket('レプトン＆ゴッド 60分×24回（重病）', 24)">60分×24回</a></td></tr>
+</table>
+
+
+
+<br>
+
+                <div class="button001" onclick="closeModal_2()">
+                    <a href="#">閉じる</a>
+                </div>
+
+  </div>
+</div>
+
+
+
+<!-- Modal: 顧客検索 -->
+<!-- モーダル内で -->
+<div id="simpleModal_5" class="modal">
+  <div class="modal-content">
+    <span class="close-btn" onclick="closeModal_5()">×</span>
+    <h5>検索する顧客情報を入力してください。いずれか一つの項目の入力で検索が可能です。</h5>
+
+    <form method="post" id="searchForm">
+  <table border="1">
+    <tr>
+      <td width="30%" class="table-highlight">ふりがな</td>
+      <td><input type="text" size="80" name="furigana" /></td>
+    </tr>
+    <tr>
+      <td class="table-highlight">顧客名</td>
+      <td><input type="text" size="80" name="name_2" /></td>
+    </tr>
+    <tr>
+      <td class="table-highlight">電話番号</td>
+      <td><input type="text" name="telephone" size="80"></td>
+    </tr>
+    <tr>
+      <td class="table-highlight">性別</td>
+      <td>
+        <select name="gender">
+          <option value="">選択してください</option>
+          <option value="女">女</option>
+          <option value="男">男</option>
+        </select>
+      </td>
+    </tr>
+    <tr>
+      <td class="table-highlight">誕生日</td>
+      <td><input type="date" name="birthday" style="width: 129px;"></td>
+    </tr>
+    <tr>
+      <td class="table-highlight">住所</td>
+      <td><input type="text" size="80" name="address" /></td>
+    </tr>
+  </table>
+
+  <br>
+
+  <div class="container3">
+    <div class="left3">
+      <div class="button001">
+        <a href="#" onclick="document.getElementById('searchForm').submit(); return false;">検索する</a>
+      </div>
+    </div>
+    <div class="center3"></div>
+    <div class="right3">
+      <div class="button001" onclick="closeModal_5()">
+        <a href="#">閉じる</a>
+      </div>
+    </div>
+  </div>
+</form>
+
+
+
+    </div>
+  </div>
+</div>
+
+
+<div id="simpleModal_9" class="modal">
+  <div class="modal-content">
+    <span class="close-btn" onclick="closeModal_9()">×</span>
+    <h5>紹介先を入力してください。</h5>
+<form id="searchForm">
+  <table border="1">
+    <tr>
+      <td width="30%" class="table-highlight">顧客番号</td>
+
+
+
+      <td><input type="text" size="80" name="partner_id" id="partner_id"
+       inputmode="numeric" pattern="[0-9]*" /></td>
+    </tr>
+  </table>
+  <br>
+  <div class="container3">
+    <div class="left3">
+      <div class="button001">
+        <a href="#" onclick="submitTokuten(); return false;">登録する</a>
+      </div>
+    </div>
+    <div class="center3"></div>
+    <div class="right3">
+      <div class="button001" onclick="closeModal_9()">
+        <a href="#">閉じる</a>
+      </div>
+    </div>
+  </div>
+</form>
+
+
+
+
+
+    </div>
+  </div>
+</div>
+
+
+
+<script>
+function submitTokuten() {
+
+
+
+
+
+  const partnerId = document.getElementById("partner_id").value.trim();
+  if (!/^[0-9]+$/.test(partnerId)) {
+    alert("顧客番号は半角数字で入力してください。");
+    return;
+  }
+
+  if (!partnerId) {
+    alert("紹介先の顧客番号を入力してください。");
+    return;
+  }
+
+  if (confirm("この内容で特典を追加しますか？")) {
+    fetch("add_tokuten.php", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        customer_id: customer_id,   // PHPから埋め込んだ変数
+        partner_id: partnerId
+      })
+    })
+    .then(res => res.json())
+    .then(data => {
+      if (data.success) {
+        alert("特典を追加しました。");
+        location.reload();
+      } else {
+        alert("エラー: " + (data.error || "登録に失敗しました"));
+      }
+    })
+    .catch(err => {
+      alert("通信エラーが発生しました。");
+    });
+  }
+}
+</script>
+
+<script>
+function useTokuten() {
+  if (confirm("特典を使用しますか？")) {
+    fetch("use_tokuten.php", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ customer_id })
+    })
+    .then(res => res.json())
+    .then(data => {
+      if (data.success) {
+        alert("特典を使用しました。");
+        location.reload();
+      } else {
+        alert("エラー: " + (data.error || "処理に失敗しました"));
+      }
+    })
+    .catch(err => {
+      alert("通信エラーが発生しました。");
+    });
+  } else {
+    alert("キャンセルしました。");
+  }
+}
+</script>
+
+<script>
+function validateAndSubmit() {
+  const form = document.getElementById("registerForm");
+  const fieldLabels = {
+    furigana: "ふりがな",
+    name_2: "顧客名",
+    telephone: "電話番号",
+    gender: "性別",
+    birthday: "誕生日",
+    address: "住所"
+  };
+
+  let isValid = true;
+  let errorMsg = "";
+
+  for (const name in fieldLabels) {
+    const field = form.querySelector(`[name="${name}"]`);
+    if (
+      !field ||
+      (field.tagName === "SELECT" && field.value === "") ||
+      (field.type === "date" && field.value === "") ||
+      (field.tagName === "INPUT" && field.type !== "date" && field.value.trim() === "")
+    ) {
+      isValid = false;
+      errorMsg += `「${fieldLabels[name]}」が未入力です。\n`;
+    }
+  }
+
+  if (!isValid) {
+    alert("すべての項目を入力してください。\n\n" + errorMsg);
+  } else {
+    const confirmed = confirm("この内容で登録しますか？");
+    if (confirmed) {
+      const hidden = document.createElement("input");
+      hidden.type = "hidden";
+      hidden.name = "mode";
+      hidden.value = "register";
+      form.appendChild(hidden);
+      form.submit();
+    } else {
+      alert("キャンセルされました。");
+    }
+  }
+}
+</script>
+
+<!-- Modal: 顧客登録 -->
+<!-- モーダル内で -->
+<div id="simpleModal_6" class="modal">
+  <div class="modal-content">
+    <span class="close-btn" onclick="closeModal_6()">×</span>
+    <h5>登録する顧客情報を入力してください。全ての項目の入力が必要です。</h5>
+
+    <form method="post" id="registerForm">
+  <table border="1">
+    <tr>
+      <td width="30%" class="table-highlight">ふりがな</td>
+      <td><input type="text" size="80" name="furigana" /></td>
+    </tr>
+    <tr>
+      <td class="table-highlight">顧客名</td>
+      <td><input type="text" size="80" name="name_2" /></td>
+    </tr>
+    <tr>
+      <td class="table-highlight">電話番号</td>
+      <td><input type="text" name="telephone" size="80"></td>
+    </tr>
+    <tr>
+      <td class="table-highlight">性別</td>
+      <td>
+        <select name="gender">
+          <option value="">選択してください</option>
+          <option value="女">女</option>
+          <option value="男">男</option>
+        </select>
+      </td>
+    </tr>
+    <tr>
+      <td class="table-highlight">誕生日</td>
+      <td><input type="date" name="birthday" style="width: 129px;"></td>
+    </tr>
+    <tr>
+      <td class="table-highlight">住所</td>
+      <td><input type="text" size="80" name="address" /></td>
+    </tr>
+  </table>
+
+  <br>
+
+  <div class="container3">
+    <div class="left3">
+      <div class="button001">
+        <a href="#" onclick="validateAndSubmit(); return false;">登録する</a>
+      </div>
+    </div>
+    <div class="center3"></div>
+    <div class="right3">
+      <div class="button001" onclick="closeModal_6()">
+        <a href="#">閉じる</a>
+      </div>
+    </div>
+  </div>
+</form>
+
+    </div>
+  </div>
+</div>
+
+
+
+
+
+
+<!-- モーダル本体 -->
+<div id="simpleModal_7" class="modal" style="display:none;">
+  <div class="modal-content">
+    <span class="close-btn" onclick="closeModal_7()">×</span>
+    <h5>接客メモを入力してください。</h5>
+
+    <form
+      id="memoForm"
+      action="insert_memo.php"
+      method="post"
+    >
+      <input
+        type="hidden" name="customer_id"
+        value="<?php echo htmlspecialchars($customer_id, ENT_QUOTES); ?>"
+      >
+<textarea id="memo" name="memo" cols="111" rows="20" placeholder="" autofocus ></textarea>
+      <br><br>
+      <div class="container3">
+<div class="left3">
+  <div class="button001">
+ <a href="#" id="submitMemoLink" role="button">登録する</a>
+
+
+
+
+
+  </div>
+</div>
+
+        <div class="center3"></div>
+        <div class="right3">
+        <div class="button001">
+          <a href="javascript:void(0)"
+             onclick="closeModal_7();">
+            閉じる
+          </a>
+        </div>
+      </div>
+  </div>
+    </form>
+  </div>
+</div>
+
+
+
+
+
+
+
+
+<div id="simpleModal_8" class="modal">
+  <div class="modal-content">
+    <span class="close-btn" onclick="closeModal_8()">×</span>
+    <h5>顧客特性を入力してください。</h5>
+
+    <form method="post" id="memoForm">
+<textarea name="memo" cols="111" class="memo-input" rows="20" placeholder=""></textarea>
+
+
+
+
+  <br><br>
+
+  <div class="container3">
+    <div class="left3">
+      <div class="button001">
+        <a href="#" onclick="validateAndSubmit(); return false;">登録する</a>
+      </div>
+    </div>
+    <div class="center3"></div>
+    <div class="right3">
+      <div class="button001" onclick="closeModal_8()">
+        <a href="#">閉じる</a>
+      </div>
+    </div>
+  </div>
+</form>
+
+    </div>
+  </div>
+</div>
+
+
+
+<!-- 共通JavaScript -->
+<script>
+  function openModal_5() {
+    document.getElementById("simpleModal_5").style.display = "block";
+    document.body.classList.add("modal-open");
+  }
+
+  function closeModal_5() {
+    document.getElementById("simpleModal_5").style.display = "none";
+    document.body.classList.remove("modal-open");
+  }
+
+  function openModal_6() {
+    document.getElementById("simpleModal_6").style.display = "block";
+    document.body.classList.add("modal-open");
+  }
+
+  function closeModal_6() {
+    document.getElementById("simpleModal_6").style.display = "none";
+    document.body.classList.remove("modal-open");
+  }
+
+  function openModal_7() {
+    document.getElementById("simpleModal_7").style.display = "block";
+    document.body.classList.add("modal-open");
+  }
+
+  function closeModal_7() {
+    document.getElementById("simpleModal_7").style.display = "none";
+    document.body.classList.remove("modal-open");
+  }
+  function openModal_8() {
+    document.getElementById("simpleModal_8").style.display = "block";
+    document.body.classList.add("modal-open");
+  }
+
+  function closeModal_8() {
+    document.getElementById("simpleModal_8").style.display = "none";
+    document.body.classList.remove("modal-open");
+  }
+
+  function openModal_9() {
+    document.getElementById("simpleModal_9").style.display = "block";
+    document.body.classList.add("modal-open");
+  }
+
+  function closeModal_9() {
+    document.getElementById("simpleModal_9").style.display = "none";
+    document.body.classList.remove("modal-open");
+  }
+</script>
+
+
+
+
+<!-- PHPでJS変数に埋め込む -->
+<script>
+  const customerId = <?= json_encode($customer_id) ?>;
+</script>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const link = document.getElementById('submitMemoLink');
+  console.log('bind OK?', !!link);
+  if (link) {
+    link.addEventListener('click', submitMemoAJAX);
+  }
+});
+
+async function submitMemoAJAX(event) {
+  event.preventDefault();
+
+  const memoEl = document.getElementById('memo');
+  const text = memoEl ? memoEl.value.trim() : '';
+
+  if (!text) {
+    alert('接客メモを入力してください。');
+    if (memoEl) memoEl.focus();
+    return;
+  }
+
+  if (!confirm('この内容で登録しますか？')) {
+    return;
+  }
+
+  try {
+    const res = await fetch('insert_memo.php', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ customer_id: customerId, memo: text })
+    });
+
+    const result = await res.json();
+
+    if (!res.ok || !result.success) {
+      throw new Error(result.message || `HTTP ${res.status}`);
+    }
+
+    alert('登録しました。');
+    memoEl.value = '';
+  } catch (err) {
+    console.error('登録失敗:', err);
+    alert('登録中にエラーが発生しました。');
+  }
+}
+</script>
+
+
+
+
+
+<script>
+function checkAndUseTicket(planName, remaining) {
+  const parts = planName.split(' ');
+  const type = parts[0];
+  const content = parts.slice(1).join(' ');
+  const customerId = 1;
+
+  fetch(window.location.pathname, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ customer_id: customerId, type, content })
+  })
+  .then(async res => {
+    const text = await res.text();
+    console.log("受信:", text);
+
+    try {
+      const data = JSON.parse(text);
+      if (data.exists === true) {
+        const input = prompt(`「${planName}」を何枚使用しますか？`, "1");
+        if (input === null) {
+          alert("キャンセルされました。"); return;
+        }
+        const quantity = parseInt(input);
+        if (isNaN(quantity) || quantity <= 0) {
+          alert("正しい枚数を入力してください。");
+        } else if (quantity > remaining) {
+          alert(`「${planName}」の残数は ${remaining} 枚です。\n${quantity} 枚は使用できません。`);
+        } else {
+          alert(`「${planName}」を ${quantity} 枚使用しました。`);
+
+          fetch('update_ticket_usage.php', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    customer_id: customerId,
+    type: type,
+    content: content,
+    quantity: quantity,
+    used_at: new Date().toISOString().slice(0, 10)
+  })
+})
+
+          .then(async res2 => {
+            const result = await res2.text();
+            console.log("更新結果:", result);
+            alert("チケットの使用情報を更新しました。");
+
+  // 🎯ここに追加処理を入れる！残数が0なら何かする
+  const newRemaining = remaining - quantity;
+  if (newRemaining === 0) {
+    // ✅ ここにゼロになったときの処理を追加
+    // 例えば：
+    alert(`売上集計を更新しました。`);
+    // または特定の関数呼び出しなど
+    // onTicketExhausted(planName);
+  }
+
+          })
+          .catch(err => {
+            console.error("更新エラー:", err);
+            alert("使用情報の更新に失敗しました。");
+          });
+        }
+      } else {
+        alert("チケットが見つかりません。");
+      }
+    } catch (e) {
+      console.error("パース失敗:", text);
+      alert("通信成功しましたがデータ形式が不正です。");
+    }
+  })
+  .catch(err => {
+    console.error("通信エラー:", err);
+    alert("通信エラーが発生しました。");
+  });
+}
+</script>
+
+
+
+
+
+
+
+<?php echo "<style>
+
+  /* 4日目以降のテーブルを最初は隠す */
+  .extra-product {
+    display: none;
+  }
+
+  .more-button2 {
+    padding: 6px 12px;
+    cursor: pointer;
+    background-color: #F5B964;
+    border: none;
+    color: #333;
+    font-size: 14px;
+    border-radius: 4px;
+  }
+
+
+
+
+
+
+
+body.modal-open {
+  overflow: hidden;
+}
+
+
+
+/* モーダルの背景（半透明） */
+.modal {
+  display: none;
+  position: fixed;
+  z-index: 9999;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.4);
+}
+
+/* モーダルの内容 */
+.modal-content {
+  position: relative;
+  background-color: #fff;
+  margin: 5% auto;
+  padding: 20px;
+  border: 1px solid #888;
+  border-radius: 8px;
+  width: 100%;
+  max-width: 800px;
+  box-shadow: 0 0 10px rgba(0,0,0,0.3);
+  /* ← ここからがスクロール設定です */
+  max-height: 80vh;
+  overflow-y: auto;
+
+}
+
+/* 右上の × ボタン */
+.close-btn {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  font-size: 20px;
+  font-weight: bold;
+  color: #888;
+  cursor: pointer;
+}
+
+.close-btn:hover {
+  color: #e74c3c;
+}
+
+
+table {
+    width: 100%; /* テーブル幅を100%に設定 */
+    border-collapse: collapse; /* 枠線を統一 */
+}
+td {
+    padding: 2px 5px; /* 上下 2px、左右 5px */
+}
+
+.space1 {
+    height: 66px; /* 高さを設定（50px分の空白） */
+}
+
+.space2 {
+    height: 13px; /* 高さを設定（50px分の空白） */
+}
+.space3 {
+    height: 37px; /* 高さを設定（50px分の空白） */
+}
+.space4 {
+    height: 66px; /* 高さを設定（50px分の空白） */
+}
+.space5 {
+    height: 28px; /* 高さを設定（50px分の空白） */
+}
+
+table, th, td {
+    border: 1px solid black;
+    border-collapse: collapse;
+}
+.button001 a {
+text-decoration: none;
+    background: #ddd;
+    border-radius: 3px;
+    position: relative;
+    display: flex;
+    justify-content: space-around;
+    align-items: center;
+    margin: 0 auto;
+    max-width: 280px;
+    padding: 10px 25px;
+    color: #4A4A4A;
+    transition: 0.3s ease-in-out;
+    font-weight: 500;
+}
+.button001 a:hover {
+    background: #4A4A4A;
+    color: #FFF;
+}
+.button001 a:after {
+    content: '';
+    width: 5px;
+    height: 5px;
+    border-top: 3px solid #4A4A4A;
+    border-right: 3px solid #4A4A4A;
+    transform: rotate(45deg) translateY(-50%);
+    position: absolute;
+    top: 50%;
+    right: 20px;
+    border-radius: 1px;
+    transition: 0.3s ease-in-out;
+}
+.button001 a:hover:after {
+    border-color: #FFF;
+}
+
+.container {
+    display: grid;
+    grid-template-columns: 4fr 6fr; /* 4:6 に分割 */
+    gap: 20px; /* 隙間 */
+    min-height: 100vh; /* 最低限画面いっぱいにする */
+}
+
+.container2 {
+    display: grid;
+    grid-template-columns: 8fr 2fr; /* 7:3 に分割 */
+    gap: 10px; /* 隙間 */
+    min-height: auto; /* 内容に応じて高さを調整 */
+}
+
+
+
+        .left2 {
+
+            padding: 0px;
+        }
+        .right2 {
+            padding: 0px;
+        }
+        .scroll-box {
+            width: 100％; /* 幅を固定 */
+            height: 282px; /* 高さを固定 */
+            border: 1px solid black; /* 枠線 */
+            overflow-y: scroll; /* 縦スクロール */
+            padding: 10px; /* 内側の余白 */
+
+        }
+
+        .scroll-box2 {
+            width: 100％; /* 幅を固定 */
+            height: 100px; /* 高さを固定 */
+            border: 1px solid black; /* 枠線 */
+            overflow-y: scroll; /* 縦スクロール */
+            padding: 10px; /* 内側の余白 */
+
+        }
+        .scroll-box3 {
+
+height: 136px; /* 高さを固定 */
+border: 1px solid black; /* 枠線 */
+overflow-y: scroll; /* 縦スクロール */
+padding: 10px; /* 内側の余白 */
+margin-bottom:10px;
+
+        }
+
+        .scroll-box4 {
+            width: 100％; /* 幅を固定 */
+            height: 136px; /* 高さを固定 */
+            border: 1px solid black; /* 枠線 */
+            overflow-y: scroll; /* 縦スクロール */
+            padding: 10px; /* 内側の余白 */
+
+            margin-bottom:10px;
+            background: #ddd;
+        }
+
+
+.table-highlight {
+    text-align: center; /* 中央揃え */
+background-color: #F5B964; /* 指定のオレンジ色 */
+font-weight: normal; /* 通常の太さに設定 */
+
+}
+
+.container3 {
+  display: grid;
+  grid-template-columns: 48% 4% 48%;
+  gap: 0px; /* 任意：カラム間に隙間が欲しい場合 */
+}
+
+
+.more-button {
+  background-color: #ddd; 
+  color: #4A4A4A;
+  border: none;
+  padding: 4px 8px;
+  cursor: pointer;
+  border-radius: 4px;
+font-weight: 500; /* すこし太め（bold より軽い） */
+
+
+
+}
+.more-button:hover {
+  background-color: #4A4A4A;
+  color: #fff;
+}
+
+
+
+
+</style>"; ?>
+
+
+<style>
+
+
+tr[class^="extra-"] {
+  display: none;
+}
+tr[class^="extra-"].show {
+  display: table-row;
+}
+
+</style>
+
+
+
+
+
