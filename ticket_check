@@ -1,0 +1,35 @@
+<?php
+header('Content-Type: application/json');
+
+// 接続情報
+$servername = "mysql322.phy.lolipop.lan";
+$username = "LAA1491315";
+$password = "test";
+$dbname = "LAA1491315-test";
+
+// リクエスト受信
+$json = file_get_contents('php://input');
+$data = json_decode($json, true);
+$customerId = $data['customer_id'];
+$type = $data['type'];
+$content = $data['content'];
+
+// DB接続
+$conn = new mysqli($servername, $username, $password, $dbname);
+if ($conn->connect_error) {
+  echo json_encode(['error' => 'DB接続失敗']);
+  exit;
+}
+
+// クエリ実行
+$sql = "SELECT COUNT(*) FROM `チケット管理` WHERE 顧客番号=? AND 種類=? AND 内容=?";
+$stmt = $conn->prepare($sql);
+$stmt->bind_param("iss", $customerId, $type, $content);
+$stmt->execute();
+$stmt->bind_result($count);
+$stmt->fetch();
+$stmt->close();
+$conn->close();
+
+// 結果返却
+echo json_encode(['exists' => $count > 0]);
