@@ -1,0 +1,62 @@
+<?php
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+
+// DB接続設定
+$dsn  = "mysql:host=mysql322.phy.lolipop.lan;dbname=LAA1491315-test;charset=utf8";
+$user = "LAA1491315";
+$pass = "test";
+
+// JSONのみ返すことを明示
+header("Content-Type: application/json");
+
+try {
+    $pdo = new PDO($dsn, $user, $pass);
+    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+
+    if ($_SERVER["REQUEST_METHOD"] !== "POST" ||
+        !isset($_SERVER["CONTENT_TYPE"]) ||
+        stripos($_SERVER["CONTENT_TYPE"], "application/json") === false) {
+        throw new Exception("不正なリクエストです。");
+    }
+
+    $json = json_decode(file_get_contents("php://input"), true);
+    if (!$json) throw new Exception("JSONが空です。");
+
+    $customer_id = intval($json["customer_id"] ?? 0);
+    $item_label  = trim($json["item_label"] ?? "");
+    if (!$customer_id || !$item_label) throw new Exception("パラメータ不足");
+
+    $types = ["レプトン＆ゴッド", "レプトンガス", "ゴッドクリーナー"];
+    $type = "";
+    foreach ($types as $t) {
+        if (strpos($item_label, $t) !== false) {
+            $type = $t;
+            break;
+        }
+    }
+    if (!$type) throw new Exception("種類の判定に失敗しました。");
+
+    $detail = trim(str_replace($type, "", $item_label));
+    preg_match("/×(\d+)回/", $detail, $match);
+    $remaining = isset($match[1]) ? intval($match[1]) : 0;
+    if ($remaining <= 0) throw new Exception("回数の抽出に失敗しました。");
+
+    $stmt = $pdo->prepare("
+        INSERT INTO チケット管理 
+        (顧客番号, 種類, 内容, 使用済み枚数, 残数, 前回使用日, 前回使用数)
+        VALUES (?, ?, ?, 0, ?, 'なし', 0)
+    ");
+    $stmt->execute([$customer_id, $type, $detail, $remaining]);
+
+    echo json_encode([
+        "success" => true,
+        "message" => "追加しました。",
+        "debug" => compact("customer_id", "type", "detail", "remaining")
+    ]);
+} catch (Exception $e) {
+    echo json_encode([
+        "success" => false,
+        "error" => $e->getMessage()
+    ]);
+}
